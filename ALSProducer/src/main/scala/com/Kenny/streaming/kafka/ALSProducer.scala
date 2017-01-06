@@ -51,9 +51,13 @@ object ALSProducer {
        */
       recordWave = reader.nextWave()
       var wave = 0
+      var total = reader.getSize()
       while (true){
-        while (recordWave.hasNext) {
+        var p = 0
+        var progress: Float = p.toFloat/total.toFloat
+        var threshold: Double = 0
 
+        while (recordWave.hasNext) {
           try {
             var record = recordWave.next()
 
@@ -68,7 +72,20 @@ object ALSProducer {
               logger.error("Exception: " + e.getMessage)
             case what: Throwable => logger.error("Unkown: " + what.toString)
           }
+          p += 1
+          progress = p.toFloat/total.toFloat
+          if (progress >= threshold)
+            {
+              var percentage = progress*100
+              logger.info(f"Progress: $percentage%3.2f%%")
+              threshold += 0.001
+            }
+          //println("P: "+p+" total: "+total+ f" Progress: $progress%3.9f")
         }
+        if (progress != 1)
+          {
+            logger.error(f"Failed to send all the message, $p%d out of $total%d message are sent. Progress: $progress%3.9f")
+          }
         logger.info("I'm gonna sleep after sending the wave #" + wave + " !")
         //Thread.sleep(producerProps.getProperty("sendTimeout", "2000").toLong)
         Thread.sleep(config.sendTimeout.toLong)
@@ -91,31 +108,6 @@ object ALSProducer {
     props.put("topic",config.topic)
     props.put("inputFile", config.inputFile)
     props.putAll(config.cmdLineProps)
-    props
-  }
-
-  def getOldProducerProps(config: ProducerConfig): Properties = {
-
-    val props = producerProps(config)
-
-    props.put("metadata.broker.list", config.brokerList)
-    props.put("compression.codec", config.compressionCodec)
-    props.put("producer.type", if(config.sync) "sync" else "async")
-    props.put("batch.num.messages", config.batchSize.toString)
-    props.put("message.send.max.retries", config.messageSendMaxRetries.toString)
-    props.put("retry.backoff.ms", config.retryBackoffMs.toString)
-    props.put("queue.buffering.max.ms", config.sendTimeout.toString)
-    props.put("queue.buffering.max.messages", config.queueSize.toString)
-    props.put("queue.enqueue.timeout.ms", config.queueEnqueueTimeoutMs.toString)
-    props.put("request.required.acks", config.requestRequiredAcks.toString)
-    props.put("request.timeout.ms", config.requestTimeoutMs.toString)
-    props.put("key.serializer.class", config.keyEncoderClass)
-    props.put("serializer.class", config.valueEncoderClass)
-    props.put("send.buffer.bytes", config.socketBuffer.toString)
-    props.put("topic.metadata.refresh.interval.ms", config.metadataExpiryMs.toString)
-    props.put("security.protocol", config.securityProtocol.toString)
-    props.put("client.id", "kenny-producer")
-
     props
   }
 
@@ -144,7 +136,7 @@ object ALSProducer {
     props.put(ProducerConfig.LINGER_MS_CONFIG, config.sendTimeout.toString)
     props.put(ProducerConfig.BUFFER_MEMORY_CONFIG, config.maxMemoryBytes.toString)
     props.put(ProducerConfig.BATCH_SIZE_CONFIG, config.maxPartitionMemoryBytes.toString)
-    props.put(ProducerConfig.CLIENT_ID_CONFIG, "kenny-producer")
+    props.put(ProducerConfig.CLIENT_ID_CONFIG, "kenny-ALSProducer")
     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.IntegerSerializer")
     props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer")
     props.put("security.protocol", config.securityProtocol.toString)
@@ -361,6 +353,11 @@ object ALSProducer {
         val key:Int = userId % 2
         new ProducerRecord [Int, String] (topic, key, value)
       })
+    }
+
+    def getSize(): Int = {
+      logger.debug("Calculating the size of file: " + input)
+      Source.fromFile(input).getLines().size
     }
 
     def close() {}
