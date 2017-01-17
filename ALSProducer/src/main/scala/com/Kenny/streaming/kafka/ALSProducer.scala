@@ -9,6 +9,8 @@ import kafka.serializer.DefaultEncoder
 import kafka.utils.{CommandLineUtils, ToolsUtils}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.utils.Utils
+import org.apache.kafka.clients.producer.Callback
+import org.apache.kafka.clients.producer.RecordMetadata
 //import org.apache.kafka.common.serialization.StringSerializer
 
 import scala.io.Source
@@ -41,6 +43,7 @@ object ALSProducer {
 
       var recordWave: Iterator[ProducerRecord[Int, String]] = null
       val sync = producerProps.getProperty("producer.type", "async").equals("sync")
+      val topic = config.topic
 
 
       //Send the Rating.
@@ -48,6 +51,8 @@ object ALSProducer {
       userId	movieId	rating	timestamp
         1	    122	    2	      945544824
         Total: 24404096 records
+
+        2200,3527,4.0,1422126710
        */
       recordWave = reader.nextWave()
       var wave = 0
@@ -60,10 +65,26 @@ object ALSProducer {
         while (recordWave.hasNext) {
           try {
             var record = recordWave.next()
+            val key = record.key()
+            var value = record.value()
 
-            var response = if (sync) producer.send(record) else producer.send(record)
-            logger.debug("Successfully sent records: " + record.toString + " with response: "+ response)
-            Thread.sleep(1000)
+            //Drop the timestamp from the record
+            var valueNew = value.split(",").dropRight(1)
+
+            var vString = valueNew.mkString(",")
+
+            //Setting the timestamp field in ProducerRecord using the current timestamp
+            //ProducerRecord(topic=ALStest, partition=0, key=0, value=2,441,2.0, timestamp=1484613127)
+
+            /*userId	movieId	rating
+              1	    122	    2
+              */
+
+            val recordNew = new ProducerRecord[Int, String](record.topic, key, (System.currentTimeMillis/1000).toLong, key, vString)
+
+            var response = if (sync) producer.send(recordNew).get() else producer.send(recordNew,new ErrorLoggingCallback(topic, key, value))
+            logger.debug("Successfully sent records: " + recordNew.toString + " with response: "+ response + " Sync = " + sync.toString)
+            Thread.sleep(config.sendTimeout.toLong)
 
           } catch {
             case e: joptsimple.OptionException =>
@@ -80,13 +101,16 @@ object ALSProducer {
               logger.info(f"Progress: $percentage%3.2f%%")
               threshold += 0.001
             }
-          //println("P: "+p+" total: "+total+ f" Progress: $progress%3.9f")
         }
         if (progress != 1)
-          {
-            logger.error(f"Failed to send all the message, $p%d out of $total%d message are sent. Progress: $progress%3.9f")
-          }
-        logger.info("I'm gonna sleep after sending the wave #" + wave + " !")
+        {
+          logger.error(f"Failed to send all the message, $p%d out of $total%d message are sent. Progress: $progress%3.9f")
+        }
+        else {
+          logger.info("Progress: 100%")
+          logger.info("I'm gonna sleep after sending the wave #" + wave + " !")
+        }
+
         //Thread.sleep(producerProps.getProperty("sendTimeout", "2000").toLong)
         Thread.sleep(config.sendTimeout.toLong)
         recordWave = reader.nextWave()
@@ -361,5 +385,14 @@ object ALSProducer {
     }
 
     def close() {}
+  }
+
+  class ErrorLoggingCallback(var topic: String, var key: Int, val value: String) extends Callback {
+
+    def onCompletion(metadata: RecordMetadata, e: Exception) {
+      if (e != null) {
+        logger.error("Error when sending message to topic {} with key: {}, value: {} with error:", topic, key, value, e)
+      }
+    }
   }
 }
