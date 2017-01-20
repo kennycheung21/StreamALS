@@ -1,0 +1,2 @@
+export SPARK_MAJOR_VERSION=2
+spark-submit --files conf/consumeKMeans-defaults.conf --master yarn-cluster --num-executors 1 --executor-cores 1 --class com.Kenny.streaming.spark.streamingKMeans consumeKMeans.jar 5 ./consumeKMeans-defaults.conf
