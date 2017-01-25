@@ -2,17 +2,15 @@ package com.Kenny.streaming.spark
 
 import java.io._
 
-import kafka.serializer.StringDecoder
-import org.apache.spark.streaming._
-import org.apache.spark.streaming.kafka010._
+import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.execution.streaming.Source
 import org.apache.spark.{SparkConf, SparkException}
-import org.apache.kafka.clients.consumer.ConsumerRecord
-import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.kafka.common.serialization.IntegerDeserializer
-import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
-import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
+import scala.concurrent.duration._
+import org.apache.spark.sql.streaming.ProcessingTime
+import org.apache.spark.sql.streaming.OutputMode.Append
 import org.apache.spark.mllib.clustering.StreamingKMeans
-import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 import java.util.Properties
@@ -32,6 +30,8 @@ object streamingKMeans {
   private val logger = LogManager.getLogger(getClass)
 
   val DEFAULT_PROPERTIES_FILE = "conf/consumeKMeans-defaults.conf"
+
+  case class Rating(uId: Int, mId: Int, rating: Float)
 
   def main(args: Array[String]) {
 
@@ -64,41 +64,117 @@ object streamingKMeans {
 
     if (wholeConfigs.getOrDefault("verbose", "false") == "true" )
       {
-        println(s"Logger Class: ${logger.getClass.getName}. Logger lever: ${logger.getEffectiveLevel}")
+        println(s"Logger Class: ${this.toString}. Logger lever: ${logger.getEffectiveLevel}")
         println(s"wholeConfigs: ${wholeConfigs.toString()}")
         println(s"kafkaParams: ${kafkaParams.toString()}")
         println(s"kMeansConfigs: ${kMeansConfigs.toString()}")
       }
 
+    val spark = SparkSession.builder().appName("KennyStreamingKMeans").enableHiveSupport().getOrCreate()
 
-    val sparkConf = new SparkConf().setAppName("KennyStreamingKMeans")
-    val topics =kafkaParams.getOrDefault("topics", "test").toString
+    import spark.implicits._
 
-    val ssc = new StreamingContext(sparkConf, Seconds(batch.toLong))
-    ssc.checkpoint("/tmp/checkpoint")
+    val topics =kafkaParams.getOrDefault("kafka.topics", "test").toString
 
-    val topicsSet = topics.split(",").toSet
+    /*val ssc = new StreamingContext(sparkConf, Seconds(batch.toLong))
+    ssc.checkpoint("/tmp/checkpoint")*/
 
-    val messages = KafkaUtils.createDirectStream[String, String](ssc, PreferConsistent, Subscribe[String,String](topicsSet, kafkaParams))
+    val topicsSet = topics.split(",").toSet.mkString(",")
 
 
-    //Manually comit kafka consumer offset after processing
-    messages.foreachRDD { rdd =>
+
+    val stringStream = spark.readStream
+      .format("kafka")
+      .options(kafkaParams).option("subscribe", topicsSet)
+      .load()
+      .selectExpr("CAST(value AS STRING)").toDF()
+
+    /*
+    root
+    |-- value: string (nullable = true)
+    */
+    stringStream.printSchema()
+
+    val ratingStream = stringStream
+      .withColumn("UID", uID($"value"))
+      .withColumn("MID", mID($"value"))
+      .withColumn("Rating", rating($"value"))
+
+    ratingStream.printSchema()
+    /*
+        root
+        |-- value: string (nullable = true)
+        |-- UID: string (nullable = true)
+        |-- MID: string (nullable = true)
+        |-- Rating: string (nullable = true)
+        */
+
+    val out = ratingStream.writeStream
+      .trigger(ProcessingTime(5.seconds))
+      .outputMode("Append")
+      .format("console")
+      .start()
+
+    out.awaitTermination()
+
+    //ToDo: Manually comit kafka consumer offset after processing
+
+    /*messages.foreachRDD { rdd =>
       val offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
 
       // some time later, after outputs have completed
       messages.asInstanceOf[CanCommitOffsets].commitAsync(offsetRanges)
-    }
+    }*/
 
-    val keys = messages.map(_.key())
-    val lines = messages.map(_.value())
-    messages.map(_.value()).print(10)
+
+    //lines.print(10)
     // 173871,265,2.0
 
+    /*val trainingData = lines.map(lineToVector)
+
+    trainingData.print(10)
+    val sc = ssc.sparkContext.
     ssc.start()
-    ssc.awaitTermination()
+    ssc.awaitTermination()*/
   }
 
+  /* /user/spark/ALS-KMeans/genome-scores.csv
+
+  movieId	  tagId	            relevance
+        1,	    1.0,	    02400000000000002
+  */
+
+ /* def loadMovies(sc: SQLContext, path : String)  = {
+    val rdd = sqlContext.read.format("com.databricks.spark.csv")
+
+  }*/
+
+  def uID  = udf((v: String) => {
+    val rs = v.split(",")(0)
+    rs
+  })
+
+  def mID = udf((v: String) => {
+    val rs = v.split(",")(1)
+    rs
+  })
+
+  def rating = udf((v: String) => {
+    val rs = v.split(",")(2)
+    rs
+  })
+
+  def lineToVector(line: String) : Vector = {
+    println("Line: "+line)
+    // 173871,265,2.0
+    val Array(uId, mId, rating) = line.split(",")
+    /*val rating: Float = buf.remove(2).toFloat
+    val uId = buf.remove(0).toInt*/
+
+    println(f"UID = ${uId}, rating = ${rating}, MoviesID = ${mId}")
+    val stringBuf = "[" + mId + "]"
+    Vectors.parse(stringBuf)
+  }
   @throws[IOException]
   def loadPropertiesFile (propertiesFile: String) : Map[String, String] = {
     val props = new Properties
@@ -138,41 +214,37 @@ object streamingKMeans {
     map
   }
 
-  def prepareKafkaConfigs (wholeConfig: Map[String, String], prefix: String = "kafkaStream."): Map[String, Object] = {
-    var kafkaParam = new ConcurrentHashMap[String, Object]
+  def prepareKafkaConfigs (wholeConfig: Map[String, String], prefix: String = "kafkaStream."): Map[String, String] = {
+    var kafkaParam = new ConcurrentHashMap[String, String]
     val DEFAULT_BOOTSTRAP_SERVER = "localhost:6667"
     val DEFAULT_TOPICS = "test"
-    val DEFAULT_GROUP_ID = "KMean_Consumer"
-    val DEFAULT_KEY_DESERIALIZER = classOf[IntegerDeserializer]
-    val DEFAULT_VALUE_DESERIALIZER = classOf[StringDeserializer]
+
+    val forbiddenConfigs = Array("group.id", "auto.offset.reset", "key.deserializer", "value.deserializer", "enable.auto.commit", "interceptor.classes")
 
     wholeConfig.foreach{ case (k, v) =>
-      if (k.startsWith(prefix)) kafkaParam.put(k.substring(prefix.length), v)
+      if (k.startsWith(prefix)) kafkaParam.put(k.replace(prefix, "kafka."), v)
     }
 
     logger.debug(s"Before injecting the default values, kafkaParams: ${kafkaParam.toString}")
 
-    if (!kafkaParam.containsKey("bootstrap.servers")){
-      logger.info(s"Property bootstrap.servers is not found, setting it to default value ${DEFAULT_BOOTSTRAP_SERVER}.")
-      kafkaParam.put("bootstrap.servers", DEFAULT_BOOTSTRAP_SERVER)
+    if (!kafkaParam.containsKey("kafka.bootstrap.servers")){
+      logger.info(s"Property kafka.bootstrap.servers is not found, setting it to default value ${DEFAULT_BOOTSTRAP_SERVER}.")
+      kafkaParam.put("kafka.bootstrap.servers", DEFAULT_BOOTSTRAP_SERVER)
     }
-    if (!kafkaParam.containsKey("topics")){
-      logger.info(s"Property topics is not found, setting it to default value ${DEFAULT_TOPICS}.")
-      kafkaParam.put("topics", DEFAULT_TOPICS)
+    if (!kafkaParam.containsKey("kafka.topics")){
+      logger.info(s"Property kafka.topics is not found, setting it to default value ${DEFAULT_TOPICS}.")
+      kafkaParam.put("kafka.topics", DEFAULT_TOPICS)
     }
-    if (!kafkaParam.containsKey("group.id")){
-      logger.info(s"Property group.id is not found, setting it to default value ${DEFAULT_GROUP_ID}.")
-      kafkaParam.put("group.id", DEFAULT_GROUP_ID)
+    // The following Kafka params cannot be set and the Kafka source will throw an exception in spark2
+
+    for (conf <- forbiddenConfigs) {
+      if (kafkaParam.containsKey("kafka."+ conf)){
+        logger.warn(s"Property kafka.${conf} is found and forbidden, removing it.")
+        kafkaParam.remove("kafka."+ conf)
+      }
     }
-    if (!kafkaParam.containsKey("key.deserializer")){
-      logger.info(s"Property key.deserializer is not found, setting it to default value ${DEFAULT_KEY_DESERIALIZER.toString}.")
-      kafkaParam.put("key.deserializer", DEFAULT_KEY_DESERIALIZER)
-    }
-    if (!kafkaParam.containsKey("value.deserializer")){
-      logger.info(s"Property value.deserializer is not found, setting it to default value ${DEFAULT_VALUE_DESERIALIZER.toString}.")
-      kafkaParam.put("value.deserializer", DEFAULT_VALUE_DESERIALIZER)
-    }
-    kafkaParam.toMap[String,Object]
+
+    kafkaParam.toMap[String,String]
   }
 
   def prepareKMeansConfigs (wholeConfig: Map[String, String], prefix: String = "kMeans."): Map[String, String] = {
