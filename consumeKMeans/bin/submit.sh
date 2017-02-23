@@ -1,2 +1,2 @@
 export SPARK_MAJOR_VERSION=2
-spark-submit --files conf/consumeKMeans-defaults.conf --master yarn-cluster --num-executors 1 --executor-cores 1 --class com.Kenny.streaming.spark.streamingKMeans consumeKMeans.jar 5 ./consumeKMeans-defaults.conf
+spark-submit --files conf/consumeKMeans-defaults.conf,/usr/hdp/current/spark2-client/conf/hive-site.xml --properties-file conf/spark.properties --class com.Kenny.streaming.spark.streamingKMeans consumeKMeans.jar 300 ./consumeKMeans-defaults.conf
