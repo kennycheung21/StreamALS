@@ -3,6 +3,7 @@ package com.Kenny.streaming.spark
 import java.io._
 import java.util.Calendar
 import java.util.{Map => JMap, HashMap => JHashMap}
+import scopt.OptionParser
 
 import kafka.serializer.StringDecoder
 import org.apache.spark.streaming._
@@ -35,7 +36,7 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
   * Created by kzhang on 1/13/17.
   */
 
-object streamingKMeans {
+object MyStreamingKMeans {
 
   private val logger = LogManager.getLogger(getClass)
 
@@ -43,32 +44,51 @@ object streamingKMeans {
 
   val schema = StructType(Array(StructField("movieId", DataTypes.IntegerType), StructField("tagId", DataTypes.IntegerType), StructField("relevance", DataTypes.FloatType)))
 
-  final case class score(movieId: Int, tagId: Int, relevance: Float)
+  final case class Score(movieId: Int, tagId: Int, relevance: Float)
+
+  case class Params (batch: Int = 120, propertiesFile: String = "conf/consumeKMeans-defaults.conf") {
+    override def toString : String = {
+      val paramValue = "Batch: " + batch.toString + "\n" + "My Properties: "+ propertiesFile + "\n"
+      paramValue
+    }
+  }
 
 
   def main(args: Array[String]) {
 
-    var propertiesFile: String = null
-    val committed = new JHashMap[TopicPartition, OffsetAndMetadata]()
-
-    if (args.length < 1) {
-      System.err.println(
-        s"""
-           |Usage: consumeKMeans.jar <batch> [properties-file]
-           |  <batch> the interval of each batch for spark streaming [required]
-           |  [properties-file] the config properties file for streamingKMeans [optional]
-         """.stripMargin)
-      System.exit(1)
+    val defaultParams = Params()
+    //Todo: adjust it
+    val parser = new OptionParser[Params]("MovieLensALS") {
+      head("StreamingALS: an example app for ALS on streaming MovieLens rating data.")
+      opt[String]('b', "batch")
+        .required()
+        .text("the interval of each batch for spark streaming")
+        .action((x, c) => c.copy(batch = x.toInt))
+      opt[String]('p', "myProperties")
+        .text("the config properties file for streamingKMeans")
+        .action((x, c) => c.copy(propertiesFile = x))
+      note(
+        """
+          |Usage: consumeKMeans.jar --batch 120 --myProperties conf/consumeKMeans-defaults.conf
+          |  <batch> the interval of each batch for spark streaming [required]
+          |  [myProperties] the config properties file for streamingKMeans [optional]
+        """.stripMargin)
     }
 
-    val batch = args(0)
-
-    if (args.length < 2) {
-      println(s"No properties-file configured. It will use the default properties file ${DEFAULT_PROPERTIES_FILE} .")
-    }else{
-      propertiesFile = args(1)
-      println(s"Use provided ${propertiesFile} as properties config file.")
+    parser.parse(args, defaultParams).map {
+      p => {
+        println("Starting to run the modle with Params: \n" + p.toString)
+        run(p)
+      }
+    } getOrElse {
+        System.exit(1)
     }
+  }
+
+  def run(params: Params){
+
+    val batch = params.batch
+    var propertiesFile: String = params.propertiesFile
 
     val wholeConfigs = loadPropertiesFile(propertiesFile)
     val kafkaParams = prepareKafkaConfigs(wholeConfigs, batch.toInt)
@@ -94,9 +114,9 @@ object streamingKMeans {
 
     //println(s"Total line of score: ${genomeScoreCount}")
 
-    def consolidateScore(k: Int, ite: Iterator[score]) = {
+    def consolidateScore(k: Int, ite: Iterator[Score]) = {
       val buf = ArrayBuffer.fill(1128){0F}
-      ite.foreach( (s: score) => {buf(s.tagId-1) = s.relevance})
+      ite.foreach( (s: Score) => {buf(s.tagId-1) = s.relevance})
       (k, buf.toArray)
     }
 
@@ -105,7 +125,7 @@ object streamingKMeans {
 
     val genomeScoreMapRdd = genomeScoreMap.rdd.cache()
 
-    val cb = new myCallback()
+    val cb = new MyCallback()
     /*Todo: val genomeScoreVar = spark.sparkContext.broadcast(genomeScoreMap.rdd)
      val LPVarStream = lines.transform(rdd => rdd.map()    )
     */
@@ -213,7 +233,7 @@ object streamingKMeans {
   }
   // Total 1128 tags,
 
-  private class myCallback extends OffsetCommitCallback () with java.io.Serializable {
+  private class MyCallback extends OffsetCommitCallback () with java.io.Serializable {
     def onComplete(m: JMap[TopicPartition, OffsetAndMetadata], e: Exception) {
       if (null != e) {
         logger.error("Commit failed", e)
@@ -225,7 +245,7 @@ object streamingKMeans {
 
   def loadGenomeScore (spark: SparkSession, path: String, sT: StructType) = {
     import spark.implicits._
-    val ds = spark.read.schema(sT).option("header", "true").csv(path).as[score]
+    val ds = spark.read.schema(sT).option("header", "true").csv(path).as[Score]
     ds
   }
 
