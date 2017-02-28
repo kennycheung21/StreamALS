@@ -57,7 +57,7 @@ object MyStreamingKMeans {
   def main(args: Array[String]) {
 
     val defaultParams = Params()
-    //Todo: adjust it
+
     val parser = new OptionParser[Params]("MovieLensALS") {
       head("StreamingALS: an example app for ALS on streaming MovieLens rating data.")
       opt[String]('b', "batch")
